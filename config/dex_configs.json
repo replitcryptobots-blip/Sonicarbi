@@ -28,10 +28,11 @@
       {
         "name": "Ambient",
         "router": "0xaaaaAAAACB71BF2C8CaE522EA5fa455571A74106",
+        "query_contract": "0x62223e90605845Cf5CC6DAE6E0de4CDA130d6DDf",
         "type": "concentrated",
         "fee": 0.002,
         "priority": 4,
-        "note": "CrocSwapDex - concentrated liquidity, not compatible with current scanner"
+        "note": "CrocSwap - concentrated liquidity, SUPPORTED via CrocQuery contract"
       },
       {
         "name": "iZiSwap",
@@ -39,7 +40,7 @@
         "type": "concentrated",
         "fee": 0.002,
         "priority": 5,
-        "note": "Liquidity NFT contract - concentrated liquidity, not compatible with current scanner"
+        "note": "NOT FULLY SUPPORTED - needs correct Quoter contract address (currently showing LiquidityManager NFT address)"
       }
     ],
     "common_tokens": [

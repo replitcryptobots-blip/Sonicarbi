@@ -10,6 +10,7 @@ from colorama import Fore, Style, init
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.config import config
+from src.concentrated_liquidity import ConcentratedLiquidityManager
 
 init(autoreset=True)
 
@@ -21,6 +22,9 @@ class ScrollDEXScanner:
 
         # Uniswap V2 Router ABI (minimal)
         self.router_abi = json.loads('[{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"}],"name":"getAmountsOut","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"view","type":"function"}]')
+
+        # Initialize concentrated liquidity manager
+        self.cl_manager = ConcentratedLiquidityManager(self.w3)
 
     def load_dex_configs(self):
         """Load DEX configurations from JSON file"""
@@ -58,19 +62,37 @@ class ScrollDEXScanner:
             # print(f"{Fore.RED}Error getting price from {dex['name']}: {str(e)}")
             return None
 
+    def get_concentrated_price(self, dex, token_in, token_out, amount_in):
+        """Get price from concentrated liquidity DEX"""
+        try:
+            price = self.cl_manager.get_price(
+                dex['name'], token_in, token_out, amount_in
+            )
+            return price
+        except Exception as e:
+            # Silently fail - pool might not exist
+            return None
+
     async def scan_pair(self, token_in, token_out, amount=1.0):
-        """Scan a token pair across all DEXes"""
+        """Scan a token pair across all DEXes (V2 and concentrated liquidity)"""
         prices = {}
 
         for dex in self.dexes:
-            if dex['type'] == 'uniswap_v2':  # Skip concentrated liquidity for now
+            price = None
+
+            if dex['type'] == 'uniswap_v2':
+                # Uniswap V2 style DEX
                 price = self.get_price(dex, token_in, token_out, amount)
-                if price:
-                    prices[dex['name']] = {
-                        'price': price,
-                        'router': dex['router'],
-                        'fee': dex['fee']
-                    }
+            elif dex['type'] == 'concentrated':
+                # Concentrated liquidity DEX (Ambient, iZiSwap, etc.)
+                price = self.get_concentrated_price(dex, token_in, token_out, amount)
+
+            if price:
+                prices[dex['name']] = {
+                    'price': price,
+                    'router': dex['router'],
+                    'fee': dex['fee']
+                }
 
         # Find arbitrage opportunities
         if len(prices) >= 2:
