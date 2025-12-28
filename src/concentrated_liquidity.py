@@ -94,8 +94,11 @@ class AmbientPriceFetcher:
                 price = 1.0 / price if price > 0 else 0
 
             # Calculate output amount
-            # Note: This is a simplified calculation
-            # Real swap would have slippage and fees
+            # WARNING: This calculation assumes the price from queryPrice is a ratio of wei amounts.
+            # If Ambient returns price as a ratio of token amounts (accounting for decimals),
+            # this calculation will be incorrect by a factor of 10^(decimals_in - decimals_out).
+            # TODO: Verify with real mainnet data and adjust if needed.
+            # See CL_AUDIT_FINDINGS.md for details.
             amount_in_adjusted = amount_in * (10 ** token_in['decimals'])
             amount_out_adjusted = amount_in_adjusted * price
             amount_out = amount_out_adjusted / (10 ** token_out['decimals'])
@@ -103,7 +106,10 @@ class AmbientPriceFetcher:
             return amount_out
 
         except Exception as e:
-            # Silently fail - pool might not exist for this pair
+            # Log errors if debug mode is enabled
+            # Silently fail otherwise - pool might not exist for this pair
+            if hasattr(config, 'DEBUG_MODE') and config.DEBUG_MODE:
+                print(f"[DEBUG] Ambient price fetch failed for {token_in.get('symbol', '?')}/{token_out.get('symbol', '?')}: {str(e)}")
             return None
 
 

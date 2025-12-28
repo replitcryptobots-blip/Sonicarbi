@@ -39,4 +39,7 @@ class Config:
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT = os.getenv('TELEGRAM_CHAT_ID')
 
+    # Debug
+    DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+
 config = Config()
