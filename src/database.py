@@ -2,13 +2,30 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import sys
-sys.path.append('..')
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.config import config
 
 class Database:
     def __init__(self):
         self.conn = psycopg2.connect(config.DATABASE_URL)
         self.create_tables()
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.close()
+        return False
+
+    def close(self):
+        """Close database connection"""
+        if self.conn:
+            self.conn.close()
 
     def create_tables(self):
         """Create database schema"""

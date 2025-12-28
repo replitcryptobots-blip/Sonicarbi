@@ -11,7 +11,7 @@
       },
       {
         "name": "Zebra",
-        "router": "0x0BE808376Ecb75a5CF9bB6D237d16cd37893d904",
+        "router": "0x0122960d6e391478bfE8fB2408Ba412D5600f621",
         "factory": "0x4a2e8bA41F332Da38aa9f6a5D86e9F2e1cE6Be6c",
         "type": "uniswap_v2",
         "fee": 0.003,
@@ -27,17 +27,19 @@
       },
       {
         "name": "Ambient",
-        "router": "0x5C7BC93d5311A1E8e2619f7773F85B6c4c59a3d8",
+        "router": "0xaaaaAAAACB71BF2C8CaE522EA5fa455571A74106",
         "type": "concentrated",
         "fee": 0.002,
-        "priority": 4
+        "priority": 4,
+        "note": "CrocSwapDex - concentrated liquidity, not compatible with current scanner"
       },
       {
         "name": "iZiSwap",
         "router": "0x1502d025BfA624469892289D45C0352997251728",
         "type": "concentrated",
         "fee": 0.002,
-        "priority": 5
+        "priority": 5,
+        "note": "Liquidity NFT contract - concentrated liquidity, not compatible with current scanner"
       }
     ],
     "common_tokens": [

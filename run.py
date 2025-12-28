@@ -7,13 +7,23 @@ Usage:
 """
 
 import asyncio
+import sys
 from src.scanner import ScrollDEXScanner
 
 def main():
     """Run the scanner"""
-    print("Starting Sonicarbi Flashloan Arbitrage Bot...")
-    scanner = ScrollDEXScanner()
-    asyncio.run(scanner.run_continuous_scan())
+    try:
+        print("Starting Sonicarbi Flashloan Arbitrage Bot...")
+        scanner = ScrollDEXScanner()
+        asyncio.run(scanner.run_continuous_scan())
+    except KeyboardInterrupt:
+        print("\n\nShutting down gracefully...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n\nFatal error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

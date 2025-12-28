@@ -1,12 +1,14 @@
 import asyncio
-import aiohttp
 import json
+import os
+import sys
+from pathlib import Path
 from web3 import Web3
-from web3.exceptions import ContractLogicError
 from datetime import datetime
 from colorama import Fore, Style, init
-import sys
-sys.path.append('..')
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.config import config
 
 init(autoreset=True)
@@ -21,7 +23,9 @@ class ScrollDEXScanner:
         self.router_abi = json.loads('[{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"}],"name":"getAmountsOut","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"view","type":"function"}]')
 
     def load_dex_configs(self):
-        with open('config/dex_configs.json', 'r') as f:
+        """Load DEX configurations from JSON file"""
+        config_path = Path(__file__).parent.parent / 'config' / 'dex_configs.json'
+        with open(config_path, 'r') as f:
             data = json.load(f)
         self.dexes = data['scroll']['dexes']
         self.tokens = data['scroll']['common_tokens']
@@ -76,48 +80,66 @@ class ScrollDEXScanner:
         """Find profitable arbitrage opportunities"""
         dex_names = list(prices.keys())
 
-        for i, buy_dex in enumerate(dex_names):
-            for sell_dex in dex_names[i+1:]:
-                buy_price = prices[buy_dex]['price']
-                sell_price = prices[sell_dex]['price']
+        for i, dex1 in enumerate(dex_names):
+            for dex2 in dex_names[i+1:]:
+                price1 = prices[dex1]['price']
+                price2 = prices[dex2]['price']
 
-                # Calculate profit
-                if buy_price < sell_price:
-                    # Buy on buy_dex, sell on sell_dex
-                    profit = sell_price - buy_price
-                    profit_pct = (profit / buy_price) * 100
+                # Check both directions for arbitrage
+                # Direction 1: Buy on dex1, sell on dex2
+                if price1 < price2:
+                    self._check_arbitrage_direction(
+                        token_in, token_out, dex1, dex2,
+                        price1, price2, prices[dex1]['fee'],
+                        prices[dex2]['fee'], amount
+                    )
 
-                    # Account for fees
-                    total_fees = prices[buy_dex]['fee'] + prices[sell_dex]['fee']
-                    net_profit_pct = profit_pct - (total_fees * 100)
+                # Direction 2: Buy on dex2, sell on dex1
+                elif price2 < price1:
+                    self._check_arbitrage_direction(
+                        token_in, token_out, dex2, dex1,
+                        price2, price1, prices[dex2]['fee'],
+                        prices[dex1]['fee'], amount
+                    )
 
-                    # Estimate gas cost (Scroll is cheap: ~0.01 gwei avg)
-                    gas_estimate = 250000  # Conservative estimate
-                    gas_price_gwei = 0.02  # Scroll average
-                    gas_cost_eth = (gas_estimate * gas_price_gwei) / 1e9
-                    gas_cost_usd = gas_cost_eth * 3500  # Assume ETH = $3500
+    def _check_arbitrage_direction(self, token_in, token_out, buy_dex, sell_dex,
+                                   buy_price, sell_price, buy_fee, sell_fee, amount):
+        """Check if arbitrage is profitable in a specific direction"""
+        # Calculate profit
+        profit = sell_price - buy_price
+        profit_pct = (profit / buy_price) * 100
 
-                    # Calculate net profit in USD
-                    gross_profit_usd = (net_profit_pct / 100) * amount * buy_price
-                    net_profit_usd = gross_profit_usd - gas_cost_usd
-                    net_profit_pct_after_gas = (net_profit_usd / (amount * buy_price)) * 100
+        # Account for fees
+        total_fees = buy_fee + sell_fee
+        net_profit_pct = profit_pct - (total_fees * 100)
 
-                    if net_profit_pct_after_gas >= (config.PROFIT_THRESHOLD * 100):
-                        opportunity = {
-                            'timestamp': datetime.now().isoformat(),
-                            'token_in': token_in['symbol'],
-                            'token_out': token_out['symbol'],
-                            'buy_dex': buy_dex,
-                            'sell_dex': sell_dex,
-                            'buy_price': buy_price,
-                            'sell_price': sell_price,
-                            'profit_pct': round(net_profit_pct_after_gas, 4),
-                            'profit_usd': round(net_profit_usd, 2),
-                            'amount': amount
-                        }
+        # Estimate gas cost (Scroll is cheap: ~0.01 gwei avg)
+        gas_estimate = 250000  # Conservative estimate
+        gas_price_gwei = 0.02  # Scroll average
+        gas_cost_eth = (gas_estimate * gas_price_gwei) / 1e9
+        gas_cost_usd = gas_cost_eth * 3500  # Assume ETH = $3500
 
-                        self.opportunities.append(opportunity)
-                        self.log_opportunity(opportunity)
+        # Calculate net profit in USD
+        gross_profit_usd = (net_profit_pct / 100) * amount * buy_price
+        net_profit_usd = gross_profit_usd - gas_cost_usd
+        net_profit_pct_after_gas = (net_profit_usd / (amount * buy_price)) * 100
+
+        if net_profit_pct_after_gas >= (config.PROFIT_THRESHOLD * 100):
+            opportunity = {
+                'timestamp': datetime.now().isoformat(),
+                'token_in': token_in['symbol'],
+                'token_out': token_out['symbol'],
+                'buy_dex': buy_dex,
+                'sell_dex': sell_dex,
+                'buy_price': buy_price,
+                'sell_price': sell_price,
+                'profit_pct': round(net_profit_pct_after_gas, 4),
+                'profit_usd': round(net_profit_usd, 2),
+                'amount': amount
+            }
+
+            self.opportunities.append(opportunity)
+            self.log_opportunity(opportunity)
 
     def log_opportunity(self, opp):
         """Log opportunity to console"""

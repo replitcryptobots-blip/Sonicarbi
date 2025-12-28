@@ -1,7 +1,11 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv('config/.env')
+# Load .env from config directory relative to this file
+config_dir = Path(__file__).parent
+env_path = config_dir / '.env'
+load_dotenv(env_path)
 
 class Config:
     # Network
