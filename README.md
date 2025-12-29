@@ -47,6 +47,39 @@ Sonicarbi/
 - Scroll RPC endpoint (testnet or mainnet)
 - Private key with ETH on Scroll for gas fees
 
+## Platform Compatibility
+
+Sonicarbi runs on multiple platforms:
+
+- ✅ **Linux** (Ubuntu, Debian, Arch, etc.)
+- ✅ **Windows 10/11** (Native & WSL)
+- ✅ **macOS** (Intel & Apple Silicon)
+- ✅ **Android** (via Termux)
+- ✅ **Docker** (all platforms)
+
+### Platform-Specific Guides
+
+For detailed installation instructions for your platform:
+
+- 📱 **[Android (Termux) Setup Guide](docs/TERMUX_SETUP.md)** - Run on your Android device 24/7
+- 🪟 **[Windows Setup Guide](docs/WINDOWS_SETUP.md)** - Native Windows installation and automation
+- 📋 **[Platform Compatibility Guide](docs/PLATFORM_COMPATIBILITY.md)** - Cross-platform guide and quick-start for all platforms
+
+### Quick Platform Installation
+
+**Android (Termux):**
+```bash
+curl -O https://raw.githubusercontent.com/replitcryptobots-blip/Sonicarbi/main/install_termux.sh
+bash install_termux.sh
+```
+
+**Windows:**
+```powershell
+# Download and run install_windows.bat
+# Or use the manual steps in docs/WINDOWS_SETUP.md
+install_windows.bat
+```
+
 ## Installation
 
 ### 1. Clone the repository
