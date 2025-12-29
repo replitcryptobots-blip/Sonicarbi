@@ -38,6 +38,7 @@ class Config:
     ENABLE_TELEGRAM = os.getenv('ENABLE_TELEGRAM_ALERTS', 'false').lower() == 'true'
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT = os.getenv('TELEGRAM_CHAT_ID')
+    DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
 
     # Debug
     DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
