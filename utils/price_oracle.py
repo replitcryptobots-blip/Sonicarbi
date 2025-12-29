@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from config.logging_config import get_logger
+from config.config import config
 from utils.gas_price import ETHPriceFetcher
 
 logger = get_logger(__name__)
@@ -63,17 +64,9 @@ class ChainlinkPriceOracle:
         }
     ]''')
 
-    # Chainlink price feed addresses on Scroll Mainnet
-    SCROLL_MAINNET_FEEDS = {
-        'ETH': '0x6bF14CB0A831078629D993FDeBcB182b21A8774C',  # ETH/USD
-        # Add more as they become available on Scroll
-    }
-
+    # Chainlink price feed addresses (loaded from config, can be overridden via env)
     # Cache duration for price feeds (5 minutes)
     CACHE_DURATION = 300
-
-    # Maximum age for Chainlink price data (10 minutes)
-    MAX_PRICE_AGE = 600
 
     def __init__(self, w3: Web3, network_mode: str = 'mainnet'):
         """
@@ -87,10 +80,23 @@ class ChainlinkPriceOracle:
         self.network_mode = network_mode
         self._cache: Dict[str, PriceFeed] = {}
 
+        # Load configuration
+        self.mainnet_feeds = {
+            'ETH': config.CHAINLINK_ETH_USD,
+            # Add more as they become available
+        }
+        self.MAX_PRICE_AGE = config.MAX_PRICE_AGE_SECONDS
+        self.MIN_ETH_PRICE = config.MIN_ETH_PRICE_USD
+        self.MAX_ETH_PRICE = config.MAX_ETH_PRICE_USD
+
         # Initialize DEX-based fallback pricing
         self.dex_eth_fetcher = ETHPriceFetcher(w3)
 
-        logger.info(f"Chainlink Price Oracle initialized (network: {network_mode})")
+        logger.info(
+            f"Chainlink Price Oracle initialized "
+            f"(network: {network_mode}, max_age: {self.MAX_PRICE_AGE}s, "
+            f"bounds: ${self.MIN_ETH_PRICE}-${self.MAX_ETH_PRICE})"
+        )
 
     def get_eth_price_usd(self) -> PriceFeed:
         """
@@ -153,11 +159,11 @@ class ChainlinkPriceOracle:
         Returns:
             Price in USD, or None if not available
         """
-        if symbol not in self.SCROLL_MAINNET_FEEDS:
+        if symbol not in self.mainnet_feeds:
             logger.debug(f"No Chainlink feed available for {symbol}")
             return None
 
-        feed_address = self.SCROLL_MAINNET_FEEDS[symbol]
+        feed_address = self.mainnet_feeds[symbol]
 
         try:
             # Create contract instance
@@ -197,11 +203,12 @@ class ChainlinkPriceOracle:
             # Convert to float
             price = float(answer) / (10 ** decimals)
 
-            # Sanity check price (ETH typically $100-$20000)
-            MIN_ETH_PRICE = 100.0
-            MAX_ETH_PRICE = 20000.0
-            if not MIN_ETH_PRICE <= price <= MAX_ETH_PRICE:
-                logger.error(f"Chainlink price out of reasonable bounds: ${price:.2f}")
+            # Sanity check price (use configurable bounds)
+            if not self.MIN_ETH_PRICE <= price <= self.MAX_ETH_PRICE:
+                logger.error(
+                    f"Chainlink price out of reasonable bounds: ${price:.2f} "
+                    f"(expected ${self.MIN_ETH_PRICE}-${self.MAX_ETH_PRICE})"
+                )
                 return None
 
             logger.debug(f"Chainlink {symbol}/USD: ${price:.2f} (updated {age:.0f}s ago)")

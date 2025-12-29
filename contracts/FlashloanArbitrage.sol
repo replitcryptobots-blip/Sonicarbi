@@ -7,13 +7,21 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title FlashloanArbitrage
  * @notice Executes DEX arbitrage opportunities using Aave V3 flashloans on Scroll
  * @dev Implements IFlashLoanSimpleReceiver for Aave V3 flashloan integration
+ *
+ * Security features:
+ * - Owner-only execution
+ * - Reentrancy protection
+ * - Emergency pause mechanism
+ * - Slippage protection
+ * - Profit verification
  */
-contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
+contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     /// @notice Aave V3 Pool address on Scroll
@@ -44,7 +52,11 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         address sellDex;          // DEX to sell on (router address)
         uint256 minProfit;        // Minimum profit in tokenBorrow
         uint256 deadline;         // Transaction deadline
+        uint256 slippageBps;      // Maximum slippage in basis points (e.g., 200 = 2%)
     }
+
+    /// @notice Maximum allowed slippage (5% in basis points)
+    uint256 public constant MAX_SLIPPAGE_BPS = 500;
 
     /// @notice Events
     event ArbitrageExecuted(
@@ -79,6 +91,7 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
     function executeArbitrage(ArbitrageParams calldata params)
         external
         onlyOwner
+        whenNotPaused
         nonReentrant
     {
         require(params.amount > 0, "Invalid amount");
@@ -86,6 +99,7 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         require(params.sellDex != address(0), "Invalid sell DEX");
         require(params.buyDex != params.sellDex, "Same DEX");
         require(params.deadline >= block.timestamp, "Deadline passed");
+        require(params.slippageBps <= MAX_SLIPPAGE_BPS, "Slippage too high");
 
         // Encode parameters for flashloan callback
         bytes memory encodedParams = abi.encode(params);
@@ -176,22 +190,24 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         internal
         returns (uint256)
     {
-        // Step 1: Swap tokenBorrow -> tokenTarget on buyDex
+        // Step 1: Swap tokenBorrow -> tokenTarget on buyDex (with slippage protection)
         uint256 targetAmount = _swapOnDex(
             params.buyDex,
             params.tokenBorrow,
             params.tokenTarget,
             amount,
-            params.deadline
+            params.deadline,
+            params.slippageBps
         );
 
-        // Step 2: Swap tokenTarget -> tokenBorrow on sellDex
+        // Step 2: Swap tokenTarget -> tokenBorrow on sellDex (with slippage protection)
         uint256 finalAmount = _swapOnDex(
             params.sellDex,
             params.tokenTarget,
             params.tokenBorrow,
             targetAmount,
-            params.deadline
+            params.deadline,
+            params.slippageBps
         );
 
         // Return the final amount (profit will be calculated in executeOperation)
@@ -199,12 +215,13 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
     }
 
     /**
-     * @notice Execute swap on Uniswap V2 compatible DEX
+     * @notice Execute swap on Uniswap V2 compatible DEX with slippage protection
      * @param router DEX router address
      * @param tokenIn Input token
      * @param tokenOut Output token
      * @param amountIn Input amount
      * @param deadline Transaction deadline
+     * @param slippageBps Maximum slippage in basis points
      * @return amountOut Output amount received
      */
     function _swapOnDex(
@@ -212,7 +229,8 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         address tokenIn,
         address tokenOut,
         uint256 amountIn,
-        uint256 deadline
+        uint256 deadline,
+        uint256 slippageBps
     ) internal returns (uint256) {
         // Approve router to spend tokens
         IERC20(tokenIn).safeIncreaseAllowance(router, amountIn);
@@ -222,11 +240,18 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         path[0] = tokenIn;
         path[1] = tokenOut;
 
-        // Execute swap with no minimum (we check profit at the end)
-        // In production, you might want to add slippage protection here
+        // Get expected output amount
+        uint256[] memory expectedAmounts = IUniswapV2Router(router).getAmountsOut(amountIn, path);
+        uint256 expectedOut = expectedAmounts[1];
+
+        // Calculate minimum output with slippage protection
+        // minOut = expectedOut * (10000 - slippageBps) / 10000
+        uint256 minAmountOut = (expectedOut * (10000 - slippageBps)) / 10000;
+
+        // Execute swap with slippage protection
         uint256[] memory amounts = IUniswapV2Router(router).swapExactTokensForTokens(
             amountIn,
-            0, // Accept any amount (profit is verified at the end)
+            minAmountOut, // Slippage-protected minimum output
             path,
             address(this),
             deadline
@@ -320,6 +345,22 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
      */
     function ADDRESSES_PROVIDER() external view returns (address) {
         return address(POOL);
+    }
+
+    /**
+     * @notice Pause contract in emergency
+     * @dev Only owner can pause
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause contract
+     * @dev Only owner can unpause
+     */
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     /**

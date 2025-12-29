@@ -11,12 +11,15 @@ from web3 import Web3
 from typing import Dict, Optional, Tuple
 import json
 from pathlib import Path
-from decimal import Decimal
+from decimal import Decimal, getcontext
 import math
 
 from config.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Set high precision for Decimal calculations
+getcontext().prec = 50
 
 
 class SlippageCalculator:
@@ -169,33 +172,39 @@ class SlippageCalculator:
                 decimals_in = token_in['decimals']
                 decimals_out = token_out['decimals']
 
-            # Convert to human-readable
-            reserve_in_float = reserve_in / (10 ** decimals_in)
-            reserve_out_float = reserve_out / (10 ** decimals_out)
+            # Convert to human-readable using Decimal for high precision
+            reserve_in_decimal = Decimal(str(reserve_in)) / Decimal(10 ** decimals_in)
+            reserve_out_decimal = Decimal(str(reserve_out)) / Decimal(10 ** decimals_out)
+            amount_in_decimal = Decimal(str(amount_in))
+
+            # Convert to float for backwards compatibility
+            reserve_in_float = float(reserve_in_decimal)
+            reserve_out_float = float(reserve_out_decimal)
 
             # Calculate price impact
             # Price impact = (amount_in / reserve_in) * 100
-            if reserve_in_float == 0:
+            if reserve_in_decimal == 0:
                 logger.error("Reserve in is zero, cannot calculate price impact")
                 return None
 
-            price_impact_pct = (amount_in / reserve_in_float) * 100
+            price_impact_pct = float((amount_in_decimal / reserve_in_decimal) * 100)
 
-            # Calculate expected output using constant product formula
+            # Calculate expected output using constant product formula with Decimal
             # Including fee
             fee = dex.get('fee', 0.003)  # Default 0.3% if not specified
-            amount_in_with_fee = amount_in * (1 - fee)
+            fee_decimal = Decimal(str(fee))
+            amount_in_with_fee_decimal = amount_in_decimal * (Decimal('1') - fee_decimal)
 
-            # Constant product: (reserve_in + amount_in_with_fee) * (reserve_out - amount_out) = k
-            # Solving for amount_out:
-            # amount_out = reserve_out - (k / (reserve_in + amount_in_with_fee))
-            # where k = reserve_in * reserve_out
+            # Convert to wei for calculation
+            amount_in_with_fee_wei_decimal = amount_in_with_fee_decimal * Decimal(10 ** decimals_in)
+            reserve_in_wei_decimal = Decimal(str(reserve_in))
+            reserve_out_wei_decimal = Decimal(str(reserve_out))
 
-            amount_in_with_fee_wei = amount_in_with_fee * (10 ** decimals_in)
-            numerator = amount_in_with_fee_wei * reserve_out
-            denominator = reserve_in + amount_in_with_fee_wei
-            amount_out_wei = numerator / denominator
-            amount_out = amount_out_wei / (10 ** decimals_out)
+            # Constant product formula
+            numerator = amount_in_with_fee_wei_decimal * reserve_out_wei_decimal
+            denominator = reserve_in_wei_decimal + amount_in_with_fee_wei_decimal
+            amount_out_wei_decimal = numerator / denominator
+            amount_out = float(amount_out_wei_decimal / Decimal(10 ** decimals_out))
 
             # Calculate spot price (before trade)
             if reserve_in_float == 0:

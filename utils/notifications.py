@@ -14,6 +14,7 @@ from typing import Dict, Optional, List
 from datetime import datetime
 from config.logging_config import get_logger
 from config.config import config
+from utils.rate_limiter import RateLimiter
 
 logger = get_logger(__name__)
 
@@ -38,8 +39,14 @@ class TelegramNotifier:
         self.api_url = f"https://api.telegram.org/bot{bot_token}"
         self.enabled = bool(bot_token and chat_id)
 
+        # Rate limiter: Telegram allows 30 messages/second, we'll be conservative with 20/sec
+        self.rate_limiter = RateLimiter(max_calls=20, period=1.0, name="TelegramRateLimit")
+
         if self.enabled:
-            logger.info(f"Telegram notifier initialized (chat_id: {chat_id})")
+            # Mask sensitive data in logs
+            masked_token = f"{bot_token[:10]}...{bot_token[-4:]}" if len(bot_token) > 14 else "***"
+            masked_chat = f"{chat_id[:3]}***" if len(chat_id) > 3 else "***"
+            logger.info(f"Telegram notifier initialized (token: {masked_token}, chat: {masked_chat})")
         else:
             logger.warning("Telegram notifier disabled (missing bot_token or chat_id)")
 
@@ -63,6 +70,9 @@ class TelegramNotifier:
         if not self.enabled:
             logger.debug("Telegram disabled, skipping message")
             return False
+
+        # Apply rate limiting
+        await self.rate_limiter.acquire()
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -238,8 +248,16 @@ class DiscordNotifier:
         self.webhook_url = webhook_url
         self.enabled = bool(webhook_url)
 
+        # Rate limiter: Discord webhooks allow 30 requests/minute, we'll use 25/min to be safe
+        self.rate_limiter = RateLimiter(max_calls=25, period=60.0, name="DiscordRateLimit")
+
         if self.enabled:
-            logger.info("Discord notifier initialized")
+            # Mask webhook URL in logs
+            if webhook_url:
+                masked_url = f"{webhook_url[:30]}...{webhook_url[-10:]}" if len(webhook_url) > 40 else "***"
+                logger.info(f"Discord notifier initialized (webhook: {masked_url})")
+            else:
+                logger.info("Discord notifier initialized")
         else:
             logger.warning("Discord notifier disabled (missing webhook_url)")
 
@@ -261,6 +279,9 @@ class DiscordNotifier:
         if not self.enabled:
             logger.debug("Discord disabled, skipping message")
             return False
+
+        # Apply rate limiting
+        await self.rate_limiter.acquire()
 
         try:
             async with aiohttp.ClientSession() as session:
