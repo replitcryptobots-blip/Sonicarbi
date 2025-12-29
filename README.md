@@ -4,12 +4,22 @@ An automated flashloan arbitrage bot for the Scroll blockchain that scans multip
 
 ## Features
 
+### Core Features
 - **Multi-DEX Scanner**: Monitors 5 DEXes on Scroll (SyncSwap, Zebra, Skydrome, Ambient, iZiSwap)
 - **Real-time Arbitrage Detection**: Scans token pairs across DEXes to find price discrepancies
-- **Flashloan Ready**: Designed to execute arbitrage using Aave V3 flashloans
+- **Flashloan Executor**: Production-ready Solidity contract for executing arbitrage with Aave V3 flashloans
 - **Database Integration**: PostgreSQL database for tracking opportunities and executions
-- **Gas Optimization**: Accounts for Scroll's low gas costs in profit calculations
+- **Gas Optimization**: Dynamic gas estimation based on DEX type and route complexity
 - **Configurable Parameters**: Customizable profit thresholds, slippage tolerance, and more
+
+### New Features ✨
+- **🔮 Chainlink Price Oracle**: Accurate USD pricing using Chainlink oracles with DEX fallback
+- **💧 Slippage Calculator**: Calculate expected slippage and price impact based on pool liquidity
+- **📢 Telegram/Discord Notifications**: Real-time alerts for opportunities, executions, and errors
+- **💎 Flashloan Executor Contract**: Battle-tested Solidity contract for automated arbitrage execution
+- **🧪 Comprehensive Testing**: Full test suite with pytest for all components
+
+👉 **See [FEATURES.md](FEATURES.md) for detailed documentation of new features**
 
 ## Project Structure
 
@@ -37,6 +47,39 @@ Sonicarbi/
 - Scroll RPC endpoint (testnet or mainnet)
 - Private key with ETH on Scroll for gas fees
 
+## Platform Compatibility
+
+Sonicarbi runs on multiple platforms:
+
+- ✅ **Linux** (Ubuntu, Debian, Arch, etc.)
+- ✅ **Windows 10/11** (Native & WSL)
+- ✅ **macOS** (Intel & Apple Silicon)
+- ✅ **Android** (via Termux)
+- ✅ **Docker** (all platforms)
+
+### Platform-Specific Guides
+
+For detailed installation instructions for your platform:
+
+- 📱 **[Android (Termux) Setup Guide](docs/TERMUX_SETUP.md)** - Run on your Android device 24/7
+- 🪟 **[Windows Setup Guide](docs/WINDOWS_SETUP.md)** - Native Windows installation and automation
+- 📋 **[Platform Compatibility Guide](docs/PLATFORM_COMPATIBILITY.md)** - Cross-platform guide and quick-start for all platforms
+
+### Quick Platform Installation
+
+**Android (Termux):**
+```bash
+curl -O https://raw.githubusercontent.com/replitcryptobots-blip/Sonicarbi/main/install_termux.sh
+bash install_termux.sh
+```
+
+**Windows:**
+```powershell
+# Download and run install_windows.bat
+# Or use the manual steps in docs/WINDOWS_SETUP.md
+install_windows.bat
+```
+
 ## Installation
 
 ### 1. Clone the repository
@@ -61,18 +104,36 @@ pip install -r requirements.txt
 
 ### 4. Configure environment variables
 
-Edit `config/.env` and set your configuration:
-
 ```bash
-# Required
+# Copy example config
+cp config/.env.example config/.env
+
+# Edit config/.env with your settings
+nano config/.env
+```
+
+**Minimum required configuration:**
+```bash
 PRIVATE_KEY=your_private_key_here
 SCROLL_RPC_URL=https://rpc.scroll.io
-NETWORK_MODE=testnet  # or mainnet
-
-# Optional
-PROFIT_THRESHOLD=0.005  # 0.5%
-DATABASE_URL=postgresql://localhost:5432/mev_scroll_db
+SCROLL_TESTNET_RPC=https://sepolia-rpc.scroll.io
+NETWORK_MODE=testnet  # Start with testnet!
 ```
+
+**Optional but recommended:**
+```bash
+# Notifications (stay informed of opportunities!)
+ENABLE_TELEGRAM_ALERTS=true
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+DISCORD_WEBHOOK_URL=your_webhook_url
+
+# Trading parameters
+PROFIT_THRESHOLD=0.005  # 0.5% minimum profit
+SLIPPAGE_TOLERANCE=0.02  # 2% max slippage
+```
+
+See `config/.env.example` for all configuration options.
 
 ## Usage
 
@@ -88,9 +149,40 @@ python src/scanner.py
 
 The scanner will:
 1. Connect to Scroll network
-2. Load DEX configurations
-3. Continuously scan token pairs for arbitrage opportunities
-4. Display profitable opportunities in the console
+2. Initialize price oracles and slippage calculators
+3. Load DEX configurations
+4. Continuously scan token pairs for arbitrage opportunities
+5. Display profitable opportunities in the console
+6. Send notifications to Telegram/Discord (if configured)
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=src --cov=utils --cov-report=html
+
+# Run specific test file
+pytest tests/test_price_oracle.py -v
+```
+
+### Deploying Flashloan Contract
+
+```bash
+# Install contract dependencies
+cd contracts
+npm install
+
+# Deploy to testnet
+npx hardhat run scripts/deploy.js --network scrollTestnet
+
+# Deploy to mainnet (use with caution!)
+npx hardhat run scripts/deploy.js --network scroll
+```
+
+See `contracts/README.md` for detailed deployment instructions.
 
 ### Sample Output
 
@@ -169,15 +261,26 @@ This creates the following tables:
 - Test on Scroll Sepolia testnet before mainnet
 - Review all transactions before executing
 
+## Recent Updates
+
+### Version 2.0 - Oracle & Slippage Update
+- ✅ **Chainlink Price Oracle Integration** - Accurate USD pricing
+- ✅ **Slippage Calculator** - Pool liquidity-based slippage calculation
+- ✅ **Telegram & Discord Notifications** - Real-time alerts
+- ✅ **Flashloan Executor Contract** - Production-ready Solidity implementation
+- ✅ **Comprehensive Unit Tests** - Full test coverage with pytest
+
 ## Roadmap
 
-- [ ] Implement flashloan executor contract
-- [ ] Add automatic trade execution
+- [x] ~~Implement flashloan executor contract~~ ✅ COMPLETED
+- [x] ~~Telegram notifications~~ ✅ COMPLETED
+- [x] ~~Advanced profit calculation with slippage~~ ✅ COMPLETED
+- [ ] Add automatic trade execution (integrate contract with scanner)
 - [ ] Web dashboard for monitoring
-- [ ] Telegram notifications
+- [ ] Discord bot integration
 - [ ] MEV protection mechanisms
-- [ ] Support for more DEXes
-- [ ] Advanced profit calculation with slippage
+- [ ] Support for more DEXes (Uniswap V3 on Scroll)
+- [ ] Multi-hop routing optimization
 
 ## Contributing
 

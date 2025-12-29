@@ -38,6 +38,15 @@ class Config:
     ENABLE_TELEGRAM = os.getenv('ENABLE_TELEGRAM_ALERTS', 'false').lower() == 'true'
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT = os.getenv('TELEGRAM_CHAT_ID')
+    DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
+
+    # Chainlink Price Feeds (Scroll Mainnet)
+    CHAINLINK_ETH_USD = os.getenv('CHAINLINK_ETH_USD', '0x6bF14CB0A831078629D993FDeBcB182b21A8774C')
+
+    # Price validation bounds
+    MIN_ETH_PRICE_USD = float(os.getenv('MIN_ETH_PRICE_USD', 100.0))
+    MAX_ETH_PRICE_USD = float(os.getenv('MAX_ETH_PRICE_USD', 20000.0))
+    MAX_PRICE_AGE_SECONDS = int(os.getenv('MAX_PRICE_AGE_SECONDS', 600))  # 10 minutes
 
     # Debug
     DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
