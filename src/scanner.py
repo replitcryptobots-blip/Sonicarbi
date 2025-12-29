@@ -11,6 +11,7 @@ from colorama import Fore, Style, init
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.config import config
 from src.concentrated_liquidity import ConcentratedLiquidityManager
+from utils.gas_price import GasPriceFetcher, ETHPriceFetcher
 
 init(autoreset=True)
 
@@ -25,6 +26,12 @@ class ScrollDEXScanner:
 
         # Initialize concentrated liquidity manager
         self.cl_manager = ConcentratedLiquidityManager(self.w3)
+
+        # Initialize gas price fetcher for dynamic gas pricing
+        self.gas_fetcher = GasPriceFetcher(self.w3)
+
+        # Initialize ETH price fetcher for better USD calculations
+        self.eth_price_fetcher = ETHPriceFetcher(self.w3)
 
     def load_dex_configs(self):
         """Load DEX configurations from JSON file"""
@@ -135,11 +142,10 @@ class ScrollDEXScanner:
         total_fees = buy_fee + sell_fee
         net_profit_pct = profit_pct - (total_fees * 100)
 
-        # Estimate gas cost (Scroll is cheap: ~0.01 gwei avg)
-        gas_estimate = 250000  # Conservative estimate
-        gas_price_gwei = 0.02  # Scroll average
-        gas_cost_eth = (gas_estimate * gas_price_gwei) / 1e9
-        gas_cost_usd = gas_cost_eth * 3500  # Assume ETH = $3500
+        # Get real-time gas price and ETH price
+        gas_estimate = 250000  # Conservative estimate for 2 swaps
+        eth_price_usd = self.eth_price_fetcher.get_eth_price_usd()
+        gas_cost_usd = self.gas_fetcher.estimate_transaction_cost_usd(gas_estimate, eth_price_usd)
 
         # Calculate net profit in USD
         gross_profit_usd = (net_profit_pct / 100) * amount * buy_price
@@ -176,12 +182,18 @@ class ScrollDEXScanner:
 
     async def run_continuous_scan(self):
         """Continuously scan for opportunities"""
+        # Get current gas price and ETH price for display
+        current_gas_price = self.gas_fetcher.get_gas_price_gwei()
+        current_eth_price = self.eth_price_fetcher.get_eth_price_usd()
+
         print(f"{Fore.MAGENTA}{'='*60}")
         print(f"{Fore.MAGENTA}🚀 Scroll Flashloan Arbitrage Scanner Started")
         print(f"{Fore.MAGENTA}Network: {config.NETWORK_MODE.upper()}")
         print(f"{Fore.MAGENTA}RPC: {config.ACTIVE_RPC}")
         print(f"{Fore.MAGENTA}Scanning {len(self.dexes)} DEXes | {len(self.tokens)} tokens")
         print(f"{Fore.MAGENTA}Profit Threshold: {config.PROFIT_THRESHOLD*100}%")
+        print(f"{Fore.CYAN}Gas Price: {current_gas_price:.4f} gwei (dynamic)")
+        print(f"{Fore.CYAN}ETH Price: ${current_eth_price:.2f}")
         print(f"{Fore.MAGENTA}{'='*60}\n")
 
         scan_count = 0
