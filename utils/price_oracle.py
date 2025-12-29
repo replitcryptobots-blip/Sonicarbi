@@ -12,9 +12,9 @@ from dataclasses import dataclass
 import time
 import json
 from pathlib import Path
-from decimal import Decimal
 
 from config.logging_config import get_logger
+from utils.gas_price import ETHPriceFetcher
 
 logger = get_logger(__name__)
 
@@ -72,6 +72,9 @@ class ChainlinkPriceOracle:
     # Cache duration for price feeds (5 minutes)
     CACHE_DURATION = 300
 
+    # Maximum age for Chainlink price data (10 minutes)
+    MAX_PRICE_AGE = 600
+
     def __init__(self, w3: Web3, network_mode: str = 'mainnet'):
         """
         Initialize Chainlink Price Oracle.
@@ -84,8 +87,7 @@ class ChainlinkPriceOracle:
         self.network_mode = network_mode
         self._cache: Dict[str, PriceFeed] = {}
 
-        # Load DEX-based fallback pricing
-        from utils.gas_price import ETHPriceFetcher
+        # Initialize DEX-based fallback pricing
         self.dex_eth_fetcher = ETHPriceFetcher(w3)
 
         logger.info(f"Chainlink Price Oracle initialized (network: {network_mode})")
@@ -179,13 +181,28 @@ class ChainlinkPriceOracle:
             if answer <= 0:
                 raise ValueError(f"Invalid price from Chainlink: {answer}")
 
-            # Check if data is recent (within last hour)
+            # Check if data is recent (reject if too old)
             age = time.time() - updated_at
-            if age > 3600:
+            if age > self.MAX_PRICE_AGE:
+                logger.error(
+                    f"Chainlink price data too old: {age:.0f}s "
+                    f"(max: {self.MAX_PRICE_AGE}s). Rejecting."
+                )
+                return None  # Force fallback to DEX pricing
+
+            # Warn if getting old but still acceptable
+            if age > 300:  # 5 minutes
                 logger.warning(f"Chainlink price data is {age:.0f}s old")
 
             # Convert to float
             price = float(answer) / (10 ** decimals)
+
+            # Sanity check price (ETH typically $100-$20000)
+            MIN_ETH_PRICE = 100.0
+            MAX_ETH_PRICE = 20000.0
+            if not MIN_ETH_PRICE <= price <= MAX_ETH_PRICE:
+                logger.error(f"Chainlink price out of reasonable bounds: ${price:.2f}")
+                return None
 
             logger.debug(f"Chainlink {symbol}/USD: ${price:.2f} (updated {age:.0f}s ago)")
 

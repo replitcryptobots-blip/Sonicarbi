@@ -175,11 +175,15 @@ class SlippageCalculator:
 
             # Calculate price impact
             # Price impact = (amount_in / reserve_in) * 100
+            if reserve_in_float == 0:
+                logger.error("Reserve in is zero, cannot calculate price impact")
+                return None
+
             price_impact_pct = (amount_in / reserve_in_float) * 100
 
             # Calculate expected output using constant product formula
             # Including fee
-            fee = dex['fee']
+            fee = dex.get('fee', 0.003)  # Default 0.3% if not specified
             amount_in_with_fee = amount_in * (1 - fee)
 
             # Constant product: (reserve_in + amount_in_with_fee) * (reserve_out - amount_out) = k
@@ -194,12 +198,24 @@ class SlippageCalculator:
             amount_out = amount_out_wei / (10 ** decimals_out)
 
             # Calculate spot price (before trade)
+            if reserve_in_float == 0:
+                logger.error("Reserve in is zero, cannot calculate price")
+                return None
+
             spot_price = reserve_out_float / reserve_in_float
 
             # Calculate effective price (after trade)
+            if amount_in == 0:
+                logger.error("Amount in is zero, cannot calculate price")
+                return None
+
             effective_price = amount_out / amount_in
 
             # Slippage = (spot_price - effective_price) / spot_price * 100
+            if spot_price == 0:
+                logger.error("Spot price is zero, cannot calculate slippage")
+                return None
+
             slippage_pct = ((spot_price - effective_price) / spot_price) * 100
 
             # Liquidity metrics
