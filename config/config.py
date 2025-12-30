@@ -51,4 +51,13 @@ class Config:
     # Debug
     DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
 
+    # Multi-Hop Routing
+    ENABLE_MULTI_HOP_ROUTING = os.getenv('ENABLE_MULTI_HOP_ROUTING', 'true').lower() == 'true'
+    MAX_ROUTING_HOPS = int(os.getenv('MAX_ROUTING_HOPS', 2))
+
+    # Private Mempool (MEV Protection)
+    USE_PRIVATE_MEMPOOL = os.getenv('USE_PRIVATE_MEMPOOL', 'false').lower() == 'true'
+    FLASHBOTS_RPC_URL = os.getenv('FLASHBOTS_RPC_URL')  # e.g., https://relay.flashbots.net (if available)
+    PRIVATE_RPC_URL = os.getenv('PRIVATE_RPC_URL')  # Private RPC with direct builder access
+
 config = Config()

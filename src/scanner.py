@@ -26,6 +26,7 @@ from config.config import config
 from config.logging_config import setup_logging, get_logger
 from src.concentrated_liquidity import ConcentratedLiquidityManager
 from utils.gas_price import GasPriceFetcher, ETHPriceFetcher
+from utils.routing import MultiHopRouter, RouteOptimizer
 
 # Initialize colorama and logging
 init(autoreset=True)
@@ -119,6 +120,15 @@ class ScrollDEXScanner:
         # Initialize ETH price fetcher for better USD calculations
         self.eth_price_fetcher = ETHPriceFetcher(self.w3)
         logger.info("ETH price fetcher initialized")
+
+        # Initialize multi-hop router for finding routes through intermediaries
+        self.multi_hop_router = MultiHopRouter(common_base_tokens=['WETH'])
+        logger.info("Multi-hop router initialized")
+
+        # Enable/disable multi-hop routing
+        self.enable_multi_hop = getattr(config, 'ENABLE_MULTI_HOP_ROUTING', True)
+        self.max_hops = getattr(config, 'MAX_ROUTING_HOPS', 2)  # 1 or 2 intermediary tokens
+        logger.info(f"Multi-hop routing: {'enabled' if self.enable_multi_hop else 'disabled'} (max hops: {self.max_hops})")
 
         # Cache for prices (to display in UI)
         self._cached_gas_price = 0.0
@@ -224,10 +234,70 @@ class ScrollDEXScanner:
             logger.debug(f"Error getting concentrated price from {dex['name']}: {str(e)}")
             return None
 
+    def get_multi_hop_price(
+        self,
+        dex: Dict,
+        route: List[str],
+        amount: float
+    ) -> Optional[float]:
+        """
+        Get price for a multi-hop route.
+
+        Args:
+            dex: DEX configuration
+            route: List of token symbols forming the route (e.g., ['STONE', 'WETH', 'USDC'])
+            amount: Input amount
+
+        Returns:
+            Final output amount after all hops, or None if any hop fails
+        """
+        current_amount = amount
+
+        # Execute each hop in the route
+        for i in range(len(route) - 1):
+            token_in_symbol = route[i]
+            token_out_symbol = route[i + 1]
+
+            # Get token configs
+            if token_in_symbol not in self.tokens or token_out_symbol not in self.tokens:
+                logger.debug(f"Unknown token in route: {token_in_symbol} or {token_out_symbol}")
+                return None
+
+            token_in = self.tokens[token_in_symbol]
+            token_out = self.tokens[token_out_symbol]
+
+            # Get price for this hop
+            if dex['type'] == 'uniswap_v2':
+                hop_output = self.get_price(dex, token_in, token_out, current_amount)
+            elif dex['type'] == 'concentrated':
+                hop_output = self.get_concentrated_price(dex, token_in, token_out, current_amount)
+            else:
+                logger.debug(f"Unknown DEX type: {dex['type']}")
+                return None
+
+            if hop_output is None:
+                # This hop doesn't exist, route is invalid
+                return None
+
+            # Output of this hop becomes input for next hop
+            current_amount = hop_output
+
+        logger.debug(
+            f"Multi-hop {' → '.join(route)} on {dex['name']}: "
+            f"{amount} → {current_amount:.6f}"
+        )
+
+        return current_amount
+
     async def scan_pair(self, token_in: Dict, token_out: Dict, amount: float = 1.0):
-        """Scan a token pair across all DEXes (V2 and concentrated liquidity)"""
+        """
+        Scan a token pair across all DEXes, including multi-hop routes.
+
+        Checks both direct pairs and multi-hop routes through intermediaries.
+        """
         prices = {}
 
+        # Scan direct routes
         for dex in self.dexes:
             price = None
 
@@ -243,12 +313,81 @@ class ScrollDEXScanner:
                     'price': price,
                     'router': dex['router'],
                     'type': dex['type'],
-                    'fee': dex['fee']
+                    'fee': dex['fee'],
+                    'route': [token_in['symbol'], token_out['symbol']],  # Direct route
+                    'num_hops': 1
                 }
+
+        # Scan multi-hop routes if enabled
+        if self.enable_multi_hop and len(self.tokens) > 2:
+            multi_hop_prices = await self._scan_multi_hop_routes(
+                token_in, token_out, amount
+            )
+            # Merge multi-hop prices
+            for key, value in multi_hop_prices.items():
+                prices[key] = value
 
         # Find arbitrage opportunities
         if len(prices) >= 2:
             await self.find_arbitrage(token_in, token_out, prices, amount)
+
+    async def _scan_multi_hop_routes(
+        self,
+        token_in: Dict,
+        token_out: Dict,
+        amount: float
+    ) -> Dict:
+        """
+        Scan for multi-hop routing opportunities.
+
+        Returns:
+            Dict mapping route_key to price info
+        """
+        multi_hop_prices = {}
+
+        # Find possible routes
+        routes = self.multi_hop_router.find_routes(
+            token_in['symbol'],
+            token_out['symbol'],
+            max_hops=self.max_hops
+        )
+
+        # Filter out direct routes (already scanned)
+        routes = [r for r in routes if len(r) > 2]
+
+        logger.debug(
+            f"Found {len(routes)} multi-hop routes for "
+            f"{token_in['symbol']}→{token_out['symbol']}"
+        )
+
+        # Try each route on each DEX
+        for route in routes:
+            for dex in self.dexes:
+                # Try to execute this route on this DEX
+                final_price = self.get_multi_hop_price(dex, route, amount)
+
+                if final_price:
+                    # Calculate number of hops (swaps)
+                    num_hops = len(route) - 1
+
+                    # Create unique key for this route+DEX combination
+                    route_key = f"{dex['name']}_{'_'.join(route)}"
+
+                    multi_hop_prices[route_key] = {
+                        'price': final_price,
+                        'router': dex['router'],
+                        'type': dex['type'],
+                        'fee': dex['fee'],
+                        'route': route,
+                        'num_hops': num_hops
+                    }
+
+                    logger.debug(
+                        f"Multi-hop route found: {' → '.join(route)} on {dex['name']}, "
+                        f"output: {final_price:.6f}"
+                    )
+
+        return multi_hop_prices
 
     async def find_arbitrage(
         self,
@@ -272,6 +411,9 @@ class ScrollDEXScanner:
                         token_in, token_out, dex1, dex2,
                         price1, price2,
                         prices[dex1]['type'], prices[dex2]['type'],
+                        prices[dex1].get('num_hops', 1), prices[dex2].get('num_hops', 1),
+                        prices[dex1].get('route', [token_in['symbol'], token_out['symbol']]),
+                        prices[dex2].get('route', [token_in['symbol'], token_out['symbol']]),
                         amount
                     )
 
@@ -281,6 +423,9 @@ class ScrollDEXScanner:
                         token_in, token_out, dex2, dex1,
                         price2, price1,
                         prices[dex2]['type'], prices[dex1]['type'],
+                        prices[dex2].get('num_hops', 1), prices[dex1].get('num_hops', 1),
+                        prices[dex2].get('route', [token_in['symbol'], token_out['symbol']]),
+                        prices[dex1].get('route', [token_in['symbol'], token_out['symbol']]),
                         amount
                     )
 
@@ -294,6 +439,10 @@ class ScrollDEXScanner:
         sell_price: float,
         buy_dex_type: str,
         sell_dex_type: str,
+        buy_num_hops: int,
+        sell_num_hops: int,
+        buy_route: List[str],
+        sell_route: List[str],
         amount: float
     ):
         """
@@ -301,6 +450,21 @@ class ScrollDEXScanner:
 
         IMPORTANT: buy_price and sell_price already include DEX fees.
         We do NOT subtract fees again.
+
+        Args:
+            token_in: Input token dict
+            token_out: Output token dict
+            buy_dex: DEX to buy on
+            sell_dex: DEX to sell on
+            buy_price: Price on buy DEX (already includes fees)
+            sell_price: Price on sell DEX (already includes fees)
+            buy_dex_type: Type of buy DEX
+            sell_dex_type: Type of sell DEX
+            buy_num_hops: Number of hops in buy route
+            sell_num_hops: Number of hops in sell route
+            buy_route: Full route for buy (e.g., ['STONE', 'WETH', 'USDC'])
+            sell_route: Full route for sell
+            amount: Trade amount
         """
         # Calculate profit in output token terms
         # If we swap 'amount' of token_in:
@@ -315,9 +479,9 @@ class ScrollDEXScanner:
         # Old buggy code: net_profit_pct = profit_pct - (total_fees * 100)
         net_profit_pct = profit_pct  # Prices already account for fees
 
-        # Get dynamic gas estimate based on DEX types
+        # Get dynamic gas estimate based on DEX types and number of hops
         gas_estimate = GasEstimator.estimate_arbitrage_gas(
-            buy_dex_type, sell_dex_type, num_hops=1
+            buy_dex_type, sell_dex_type, num_hops=max(buy_num_hops, sell_num_hops)
         )
 
         # Get real-time ETH price
@@ -364,6 +528,9 @@ class ScrollDEXScanner:
 
         # Check if profitable
         if net_profit_pct_after_gas >= (config.PROFIT_THRESHOLD * 100):
+            # Check if this is a multi-hop route
+            is_multi_hop = (len(buy_route) > 2) or (len(sell_route) > 2)
+
             opportunity = {
                 'timestamp': datetime.now().isoformat(),
                 'token_in': token_in['symbol'],
@@ -376,14 +543,23 @@ class ScrollDEXScanner:
                 'profit_usd': round(net_profit_usd, 2),
                 'gas_cost_usd': round(gas_cost_usd, 4),
                 'gas_estimate': gas_estimate,
-                'amount': amount
+                'amount': amount,
+                'buy_route': buy_route,
+                'sell_route': sell_route,
+                'is_multi_hop': is_multi_hop,
+                'buy_num_hops': buy_num_hops,
+                'sell_num_hops': sell_num_hops
             }
 
             self.opportunities.append(opportunity)
             self.log_opportunity(opportunity)
+
+            # Log with route information
+            buy_route_str = ' → '.join(buy_route) if is_multi_hop else buy_dex
+            sell_route_str = ' → '.join(sell_route) if is_multi_hop else sell_dex
             logger.info(
                 f"OPPORTUNITY FOUND: {opportunity['token_in']}→{opportunity['token_out']} "
-                f"{opportunity['buy_dex']}→{opportunity['sell_dex']} "
+                f"{buy_route_str} → {sell_route_str} "
                 f"profit={opportunity['profit_pct']}% (${opportunity['profit_usd']})"
             )
 
@@ -393,8 +569,20 @@ class ScrollDEXScanner:
         print(f"{Fore.YELLOW}🎯 ARBITRAGE OPPORTUNITY FOUND!")
         print(f"{Fore.CYAN}Time: {opp['timestamp']}")
         print(f"{Fore.WHITE}Pair: {opp['token_in']} → {opp['token_out']}")
-        print(f"{Fore.WHITE}Buy on: {opp['buy_dex']} @ {opp['buy_price']:.6f}")
-        print(f"{Fore.WHITE}Sell on: {opp['sell_dex']} @ {opp['sell_price']:.6f}")
+
+        # Show multi-hop routes if applicable
+        if opp.get('is_multi_hop', False):
+            buy_route_str = ' → '.join(opp['buy_route'])
+            sell_route_str = ' → '.join(opp['sell_route'])
+            print(f"{Fore.MAGENTA}Buy Route: {buy_route_str} ({opp['buy_num_hops']} hops)")
+            print(f"{Fore.MAGENTA}Sell Route: {sell_route_str} ({opp['sell_num_hops']} hops)")
+            print(f"{Fore.WHITE}Buy DEX: {opp['buy_dex']} @ {opp['buy_price']:.6f}")
+            print(f"{Fore.WHITE}Sell DEX: {opp['sell_dex']} @ {opp['sell_price']:.6f}")
+        else:
+            # Standard single-hop display
+            print(f"{Fore.WHITE}Buy on: {opp['buy_dex']} @ {opp['buy_price']:.6f}")
+            print(f"{Fore.WHITE}Sell on: {opp['sell_dex']} @ {opp['sell_price']:.6f}")
+
         print(f"{Fore.GREEN}Profit: {opp['profit_pct']:.3f}% (${opp['profit_usd']})")
         print(f"{Fore.CYAN}Gas Cost: ${opp['gas_cost_usd']:.4f} ({opp['gas_estimate']} gas)")
         print(f"{Fore.GREEN}{'='*60}\n")

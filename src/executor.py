@@ -35,6 +35,7 @@ from config.config import config
 from utils.slippage_calculator import SlippageCalculator
 from utils.gas_price import GasPriceFetcher, ETHPriceFetcher
 from utils.notifications import NotificationManager
+from utils.private_mempool import PrivateMempoolManager
 
 logger = get_logger(__name__)
 
@@ -284,6 +285,20 @@ class ArbitrageExecutor:
             time_window_seconds=300,
             cooldown_seconds=600
         )
+
+        # Private mempool manager for MEV protection
+        self.use_private_mempool = getattr(config, 'USE_PRIVATE_MEMPOOL', False)
+        if not dry_run:
+            self.private_mempool = PrivateMempoolManager(
+                w3=w3,
+                prefer_private=self.use_private_mempool
+            )
+            logger.info(
+                f"Private mempool: {'enabled' if self.use_private_mempool else 'disabled'} "
+                f"(provider: {self.private_mempool.get_active_provider()})"
+            )
+        else:
+            self.private_mempool = None
 
         # Execution statistics
         self.stats = {
@@ -557,15 +572,36 @@ class ArbitrageExecutor:
             # Sign transaction
             signed_tx = self.account.sign_transaction(tx)
 
-            # Send transaction
-            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            tx_hash_hex = tx_hash.hex()
+            # Send transaction through private mempool (if available)
+            if self.private_mempool:
+                # Calculate max block number (valid for next 5 blocks)
+                current_block = self.w3.eth.block_number
+                max_block_number = current_block + 5
 
-            logger.info(f"Transaction sent: {tx_hash_hex}")
+                tx_hash_hex = await self.private_mempool.send_transaction(
+                    signed_tx.rawTransaction,
+                    max_block_number=max_block_number
+                )
+
+                if not tx_hash_hex:
+                    raise ExecutionError("Failed to send transaction through any mempool provider")
+
+                logger.info(
+                    f"Transaction sent via {self.private_mempool.get_active_provider()}: "
+                    f"{tx_hash_hex}"
+                )
+            else:
+                # Fallback to direct sending (should not reach here in non-dry-run mode)
+                tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                tx_hash_hex = tx_hash.hex()
+                logger.info(f"Transaction sent: {tx_hash_hex}")
 
             # Wait for receipt
             logger.info("Waiting for transaction confirmation...")
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+            receipt = self.w3.eth.wait_for_transaction_receipt(
+                bytes.fromhex(tx_hash_hex.replace('0x', '')),
+                timeout=300
+            )
 
             # Check if successful
             if receipt['status'] == 1:
@@ -636,7 +672,7 @@ class ArbitrageExecutor:
 
     def get_statistics(self) -> Dict:
         """Get execution statistics."""
-        return {
+        stats = {
             **self.stats,
             'circuit_breaker': self.circuit_breaker.get_status(),
             'success_rate': (
@@ -647,3 +683,9 @@ class ArbitrageExecutor:
                 self.stats['total_profit_usd'] - self.stats['total_gas_spent_usd']
             )
         }
+
+        # Add private mempool stats if available
+        if self.private_mempool:
+            stats['private_mempool'] = self.private_mempool.get_stats()
+
+        return stats
