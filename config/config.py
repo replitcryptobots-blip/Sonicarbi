@@ -1,10 +1,25 @@
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from config directory relative to this file
 config_dir = Path(__file__).parent
 env_path = config_dir / '.env'
+env_example_path = config_dir / '.env.example'
+
+# Auto-create .env from .env.example if it doesn't exist
+if not env_path.exists() and env_example_path.exists():
+    print(f"[INFO] .env file not found. Creating from .env.example...")
+    shutil.copy(env_example_path, env_path)
+    print(f"[INFO] Created {env_path}")
+    print(f"[INFO] Please edit {env_path} and configure your settings (especially PRIVATE_KEY if trading)")
+elif not env_path.exists() and not env_example_path.exists():
+    raise FileNotFoundError(
+        f"Neither .env nor .env.example found in {config_dir}. "
+        f"Please create a .env file with your configuration."
+    )
+
 load_dotenv(env_path)
 
 class Config:
