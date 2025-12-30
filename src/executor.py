@@ -170,7 +170,7 @@ class ArbitrageExecutor:
     6. Handle results
     """
 
-    # Flashloan contract ABI (minimal)
+    # Flashloan contract ABI (updated for multi-hop support)
     FLASHLOAN_ABI = json.loads('''[
         {
             "inputs": [
@@ -181,6 +181,8 @@ class ArbitrageExecutor:
                         {"internalType": "address", "name": "tokenTarget", "type": "address"},
                         {"internalType": "address", "name": "buyDex", "type": "address"},
                         {"internalType": "address", "name": "sellDex", "type": "address"},
+                        {"internalType": "address[]", "name": "buyPath", "type": "address[]"},
+                        {"internalType": "address[]", "name": "sellPath", "type": "address[]"},
                         {"internalType": "uint256", "name": "minProfit", "type": "uint256"},
                         {"internalType": "uint256", "name": "deadline", "type": "uint256"},
                         {"internalType": "uint256", "name": "slippageBps", "type": "uint256"}
@@ -204,6 +206,8 @@ class ArbitrageExecutor:
                         {"internalType": "address", "name": "tokenTarget", "type": "address"},
                         {"internalType": "address", "name": "buyDex", "type": "address"},
                         {"internalType": "address", "name": "sellDex", "type": "address"},
+                        {"internalType": "address[]", "name": "buyPath", "type": "address[]"},
+                        {"internalType": "address[]", "name": "sellPath", "type": "address[]"},
                         {"internalType": "uint256", "name": "minProfit", "type": "uint256"},
                         {"internalType": "uint256", "name": "deadline", "type": "uint256"},
                         {"internalType": "uint256", "name": "slippageBps", "type": "uint256"}
@@ -484,11 +488,41 @@ class ArbitrageExecutor:
             min_profit_tokens = expected_profit_tokens * 0.8
             min_profit_wei = int(min_profit_tokens * (10 ** token_in['decimals']))
 
-            # Deadline (5 minutes from now)
-            deadline = self.w3.eth.get_block('latest')['timestamp'] + 300
+            # Deadline (5 minutes from now, using current time + buffer)
+            # Using time.time() is more reliable than block timestamp which could be stale
+            import time
+            deadline = int(time.time()) + 300  # Current timestamp + 5 minutes
 
             # Slippage in basis points (from config)
             slippage_bps = int(config.SLIPPAGE_TOLERANCE * 10000)
+
+            # Build buy and sell paths for multi-hop support
+            buy_route = opp.get('buy_route', [token_in['symbol'], token_out['symbol']])
+            sell_route = opp.get('sell_route', [token_out['symbol'], token_in['symbol']])
+
+            # Convert routes from symbols to addresses
+            buy_path = []
+            sell_path = []
+
+            if len(buy_route) > 2:
+                # Multi-hop buy route
+                for symbol in buy_route:
+                    if symbol in self.tokens:
+                        buy_path.append(Web3.to_checksum_address(self.tokens[symbol]['address']))
+                    else:
+                        logger.warning(f"Unknown token in buy route: {symbol}")
+                        buy_path = []  # Fall back to empty (direct swap)
+                        break
+
+            if len(sell_route) > 2:
+                # Multi-hop sell route
+                for symbol in sell_route:
+                    if symbol in self.tokens:
+                        sell_path.append(Web3.to_checksum_address(self.tokens[symbol]['address']))
+                    else:
+                        logger.warning(f"Unknown token in sell route: {symbol}")
+                        sell_path = []  # Fall back to empty (direct swap)
+                        break
 
             params = {
                 'tokenBorrow': Web3.to_checksum_address(token_in['address']),
@@ -496,10 +530,17 @@ class ArbitrageExecutor:
                 'tokenTarget': Web3.to_checksum_address(token_out['address']),
                 'buyDex': buy_dex_router,
                 'sellDex': sell_dex_router,
+                'buyPath': buy_path,  # Empty array for direct swap, populated for multi-hop
+                'sellPath': sell_path,  # Empty array for direct swap, populated for multi-hop
                 'minProfit': min_profit_wei,
                 'deadline': deadline,
                 'slippageBps': slippage_bps
             }
+
+            logger.debug(
+                f"Simulation params: buy_route={buy_route} ({len(buy_path)} addresses), "
+                f"sell_route={sell_route} ({len(sell_path)} addresses)"
+            )
 
             # Call simulateArbitrage view function
             logger.debug(f"Simulating arbitrage with params: {params}")
