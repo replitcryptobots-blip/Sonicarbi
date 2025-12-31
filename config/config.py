@@ -49,6 +49,12 @@ class Config:
     MIN_LIQUIDITY_USD = float(os.getenv('MIN_LIQUIDITY_USD', 5000))
     SLIPPAGE_TOLERANCE = float(os.getenv('SLIPPAGE_TOLERANCE', 0.02))
 
+    # Minimum profit in USD to execute trade (dust threshold)
+    MIN_PROFIT_USD = float(os.getenv('MIN_PROFIT_USD', 1.0))
+
+    # Maximum trade size in USD (safety limit)
+    MAX_TRADE_SIZE_USD = float(os.getenv('MAX_TRADE_SIZE_USD', 10000.0))
+
     # Monitoring
     ENABLE_TELEGRAM = os.getenv('ENABLE_TELEGRAM_ALERTS', 'false').lower() == 'true'
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')

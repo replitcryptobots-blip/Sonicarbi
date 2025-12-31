@@ -47,9 +47,11 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
     struct ArbitrageParams {
         address tokenBorrow;      // Token to flashloan
         uint256 amount;           // Amount to borrow
-        address tokenTarget;      // Token to swap to
+        address tokenTarget;      // Token to swap to (for 2-hop routes)
         address buyDex;           // DEX to buy on (router address)
         address sellDex;          // DEX to sell on (router address)
+        address[] buyPath;        // Full path for buy swap (if multi-hop)
+        address[] sellPath;       // Full path for sell swap (if multi-hop)
         uint256 minProfit;        // Minimum profit in tokenBorrow
         uint256 deadline;         // Transaction deadline
         uint256 slippageBps;      // Maximum slippage in basis points (e.g., 200 = 2%)
@@ -58,6 +60,12 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
     /// @notice Maximum allowed slippage (5% in basis points)
     uint256 public constant MAX_SLIPPAGE_BPS = 500;
 
+    /// @notice Maximum trade size (in wei, adjustable by owner)
+    uint256 public maxTradeSize = type(uint256).max;
+
+    /// @notice Minimum profit threshold (in wei, adjustable by owner)
+    uint256 public minProfitThreshold = 0;
+
     /// @notice Events
     event ArbitrageExecuted(
         address indexed tokenBorrow,
@@ -65,15 +73,24 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         uint256 amountBorrowed,
         uint256 profit,
         address buyDex,
-        address sellDex
+        address sellDex,
+        uint256 buyPathLength,
+        uint256 sellPathLength
     );
 
     event ProfitWithdrawn(address indexed token, uint256 amount, address indexed to);
+
+    event MaxTradeSizeUpdated(uint256 oldSize, uint256 newSize);
+
+    event MinProfitThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
 
     /// @notice Errors
     error InsufficientProfit(uint256 actual, uint256 required);
     error UnauthorizedFlashLoan();
     error ArbitrageFailed(string reason);
+    error TradeSizeTooLarge(uint256 amount, uint256 maxAllowed);
+    error InvalidPath(string reason);
+    error InvalidRouter(address router);
 
     /**
      * @notice Constructor
@@ -94,12 +111,26 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         whenNotPaused
         nonReentrant
     {
+        // Input validation
         require(params.amount > 0, "Invalid amount");
         require(params.buyDex != address(0), "Invalid buy DEX");
         require(params.sellDex != address(0), "Invalid sell DEX");
         require(params.buyDex != params.sellDex, "Same DEX");
         require(params.deadline >= block.timestamp, "Deadline passed");
         require(params.slippageBps <= MAX_SLIPPAGE_BPS, "Slippage too high");
+
+        // Trade size limit
+        if (params.amount > maxTradeSize) {
+            revert TradeSizeTooLarge(params.amount, maxTradeSize);
+        }
+
+        // Validate paths if provided
+        if (params.buyPath.length > 0) {
+            _validatePath(params.buyPath, params.tokenBorrow, params.tokenTarget);
+        }
+        if (params.sellPath.length > 0) {
+            _validatePath(params.sellPath, params.tokenTarget, params.tokenBorrow);
+        }
 
         // Encode parameters for flashloan callback
         bytes memory encodedParams = abi.encode(params);
@@ -165,6 +196,11 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
             revert InsufficientProfit(netProfit, arbParams.minProfit);
         }
 
+        // Check global minimum profit threshold
+        if (netProfit < minProfitThreshold) {
+            revert InsufficientProfit(netProfit, minProfitThreshold);
+        }
+
         // Approve the Pool to pull the total debt
         IERC20(asset).safeIncreaseAllowance(address(POOL), totalDebt);
 
@@ -174,7 +210,9 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
             amount,
             netProfit,
             arbParams.buyDex,
-            arbParams.sellDex
+            arbParams.sellDex,
+            arbParams.buyPath.length > 0 ? arbParams.buyPath.length : 2,
+            arbParams.sellPath.length > 0 ? arbParams.sellPath.length : 2
         );
 
         return true;
@@ -190,25 +228,47 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         internal
         returns (uint256)
     {
-        // Step 1: Swap tokenBorrow -> tokenTarget on buyDex (with slippage protection)
-        uint256 targetAmount = _swapOnDex(
-            params.buyDex,
-            params.tokenBorrow,
-            params.tokenTarget,
-            amount,
-            params.deadline,
-            params.slippageBps
-        );
+        // Step 1: Buy swap - use multi-hop if path provided, otherwise direct swap
+        uint256 targetAmount;
+        if (params.buyPath.length > 0) {
+            targetAmount = _swapOnDexMultiHop(
+                params.buyDex,
+                params.buyPath,
+                amount,
+                params.deadline,
+                params.slippageBps
+            );
+        } else {
+            targetAmount = _swapOnDex(
+                params.buyDex,
+                params.tokenBorrow,
+                params.tokenTarget,
+                amount,
+                params.deadline,
+                params.slippageBps
+            );
+        }
 
-        // Step 2: Swap tokenTarget -> tokenBorrow on sellDex (with slippage protection)
-        uint256 finalAmount = _swapOnDex(
-            params.sellDex,
-            params.tokenTarget,
-            params.tokenBorrow,
-            targetAmount,
-            params.deadline,
-            params.slippageBps
-        );
+        // Step 2: Sell swap - use multi-hop if path provided, otherwise direct swap
+        uint256 finalAmount;
+        if (params.sellPath.length > 0) {
+            finalAmount = _swapOnDexMultiHop(
+                params.sellDex,
+                params.sellPath,
+                targetAmount,
+                params.deadline,
+                params.slippageBps
+            );
+        } else {
+            finalAmount = _swapOnDex(
+                params.sellDex,
+                params.tokenTarget,
+                params.tokenBorrow,
+                targetAmount,
+                params.deadline,
+                params.slippageBps
+            );
+        }
 
         // Return the final amount (profit will be calculated in executeOperation)
         return finalAmount;
@@ -257,7 +317,88 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
             deadline
         );
 
+        // Reset allowance to 0 for security (prevent lingering approvals)
+        IERC20(tokenIn).forceApprove(router, 0);
+
         return amounts[amounts.length - 1];
+    }
+
+    /**
+     * @notice Execute multi-hop swap on Uniswap V2 compatible DEX
+     * @param router DEX router address
+     * @param path Full swap path (e.g., [tokenA, tokenB, tokenC])
+     * @param amountIn Input amount
+     * @param deadline Transaction deadline
+     * @param slippageBps Maximum slippage in basis points
+     * @return amountOut Final output amount received
+     */
+    function _swapOnDexMultiHop(
+        address router,
+        address[] memory path,
+        uint256 amountIn,
+        uint256 deadline,
+        uint256 slippageBps
+    ) internal returns (uint256) {
+        require(path.length >= 2, "Path too short");
+        require(path.length <= 4, "Path too long");  // Limit to 3 hops max
+
+        // Approve router to spend input tokens
+        IERC20(path[0]).safeIncreaseAllowance(router, amountIn);
+
+        // Get expected output amount
+        uint256[] memory expectedAmounts = IUniswapV2Router(router).getAmountsOut(amountIn, path);
+        uint256 expectedOut = expectedAmounts[expectedAmounts.length - 1];
+
+        // Calculate minimum output with slippage protection
+        uint256 minAmountOut = (expectedOut * (10000 - slippageBps)) / 10000;
+
+        // Execute multi-hop swap with slippage protection
+        uint256[] memory amounts = IUniswapV2Router(router).swapExactTokensForTokens(
+            amountIn,
+            minAmountOut,
+            path,
+            address(this),
+            deadline
+        );
+
+        // Reset allowance to 0 for security (prevent lingering approvals)
+        IERC20(path[0]).forceApprove(router, 0);
+
+        return amounts[amounts.length - 1];
+    }
+
+    /**
+     * @notice Validate swap path
+     * @param path Swap path to validate
+     * @param expectedStart Expected first token
+     * @param expectedEnd Expected last token
+     */
+    function _validatePath(
+        address[] memory path,
+        address expectedStart,
+        address expectedEnd
+    ) internal pure {
+        if (path.length < 2) {
+            revert InvalidPath("Path too short");
+        }
+        if (path.length > 4) {
+            revert InvalidPath("Path too long (max 3 hops)");
+        }
+        if (path[0] != expectedStart) {
+            revert InvalidPath("Path start mismatch");
+        }
+        if (path[path.length - 1] != expectedEnd) {
+            revert InvalidPath("Path end mismatch");
+        }
+
+        // Ensure no duplicate tokens in path
+        for (uint i = 0; i < path.length - 1; i++) {
+            for (uint j = i + 1; j < path.length; j++) {
+                if (path[i] == path[j]) {
+                    revert InvalidPath("Duplicate token in path");
+                }
+            }
+        }
     }
 
     /**
@@ -270,29 +411,39 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
         view
         returns (uint256 expectedProfit)
     {
-        // Get buy price
-        address[] memory buyPath = new address[](2);
-        buyPath[0] = params.tokenBorrow;
-        buyPath[1] = params.tokenTarget;
+        // Determine buy path
+        address[] memory buyPath;
+        if (params.buyPath.length > 0) {
+            buyPath = params.buyPath;
+        } else {
+            buyPath = new address[](2);
+            buyPath[0] = params.tokenBorrow;
+            buyPath[1] = params.tokenTarget;
+        }
 
+        // Get buy price
         uint256[] memory buyAmounts = IUniswapV2Router(params.buyDex).getAmountsOut(
             params.amount,
             buyPath
         );
+        uint256 targetAmount = buyAmounts[buyAmounts.length - 1];
 
-        uint256 targetAmount = buyAmounts[1];
+        // Determine sell path
+        address[] memory sellPath;
+        if (params.sellPath.length > 0) {
+            sellPath = params.sellPath;
+        } else {
+            sellPath = new address[](2);
+            sellPath[0] = params.tokenTarget;
+            sellPath[1] = params.tokenBorrow;
+        }
 
         // Get sell price
-        address[] memory sellPath = new address[](2);
-        sellPath[0] = params.tokenTarget;
-        sellPath[1] = params.tokenBorrow;
-
         uint256[] memory sellAmounts = IUniswapV2Router(params.sellDex).getAmountsOut(
             targetAmount,
             sellPath
         );
-
-        uint256 finalAmount = sellAmounts[1];
+        uint256 finalAmount = sellAmounts[sellAmounts.length - 1];
 
         // Calculate profit (accounting for 0.09% Aave flashloan fee)
         uint256 flashloanFee = (params.amount * 9) / 10000; // 0.09%
@@ -361,6 +512,26 @@ contract FlashloanArbitrage is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuar
      */
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /**
+     * @notice Set maximum trade size
+     * @param newMaxSize New maximum trade size in wei
+     */
+    function setMaxTradeSize(uint256 newMaxSize) external onlyOwner {
+        uint256 oldSize = maxTradeSize;
+        maxTradeSize = newMaxSize;
+        emit MaxTradeSizeUpdated(oldSize, newMaxSize);
+    }
+
+    /**
+     * @notice Set minimum profit threshold
+     * @param newThreshold New minimum profit threshold in wei
+     */
+    function setMinProfitThreshold(uint256 newThreshold) external onlyOwner {
+        uint256 oldThreshold = minProfitThreshold;
+        minProfitThreshold = newThreshold;
+        emit MinProfitThresholdUpdated(oldThreshold, newThreshold);
     }
 
     /**

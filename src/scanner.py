@@ -45,6 +45,9 @@ class GasEstimator:
     CONCENTRATED_SWAP_GAS = 180000
     FLASHLOAN_OVERHEAD = 50000
 
+    # Aave V3 flashloan fee (0.09%)
+    AAVE_FLASHLOAN_FEE_BPS = 9  # 9 basis points = 0.09%
+
     @classmethod
     def estimate_arbitrage_gas(
         cls,
@@ -487,6 +490,11 @@ class ScrollDEXScanner:
         # Get real-time ETH price
         eth_price_usd = self.eth_price_fetcher.get_eth_price_usd()
 
+        # Calculate flashloan fee (0.09% on borrowed amount)
+        # This applies to the input token (token_in)
+        flashloan_fee_pct = GasEstimator.AAVE_FLASHLOAN_FEE_BPS / 10000.0  # 0.0009
+        flashloan_fee_tokens = amount * flashloan_fee_pct
+
         # Calculate gas cost in USD
         gas_cost_usd = self.gas_fetcher.estimate_transaction_cost_usd(
             gas_estimate, eth_price_usd
@@ -503,9 +511,19 @@ class ScrollDEXScanner:
         if token_out['symbol'] in ['USDC', 'USDT']:
             # Stablecoin - profit_tokens is already in USD
             gross_profit_usd = profit_tokens * amount
+            flashloan_fee_usd = flashloan_fee_tokens * amount
         elif token_out['symbol'] == 'WETH':
             # WETH - convert to USD
             gross_profit_usd = profit_tokens * amount * eth_price_usd
+            flashloan_fee_usd = flashloan_fee_tokens * eth_price_usd
+        elif token_in['symbol'] in ['USDC', 'USDT']:
+            # Input is stablecoin, calculate flashloan fee in USD
+            gross_profit_usd = profit_tokens * amount  # Approximation
+            flashloan_fee_usd = flashloan_fee_tokens
+        elif token_in['symbol'] == 'WETH':
+            # Input is WETH, flashloan fee is in WETH
+            gross_profit_usd = profit_tokens * amount * eth_price_usd  # Approximation
+            flashloan_fee_usd = flashloan_fee_tokens * eth_price_usd
         else:
             # Other tokens - we'd need price oracle
             # For now, log warning and skip USD calculation
@@ -514,20 +532,24 @@ class ScrollDEXScanner:
                 f"Need price oracle for {token_out['symbol']}."
             )
             gross_profit_usd = 0  # Can't calculate
+            flashloan_fee_usd = 0
 
-        # Net profit after gas
-        net_profit_usd = gross_profit_usd - gas_cost_usd
-        net_profit_pct_after_gas = (net_profit_usd / (amount * buy_price)) * 100
+        # Net profit after gas AND flashloan fee
+        net_profit_usd = gross_profit_usd - gas_cost_usd - flashloan_fee_usd
+        net_profit_pct_after_gas = (net_profit_usd / (amount * buy_price)) * 100 if (amount * buy_price) > 0 else 0
 
         logger.debug(
             f"Arbitrage check: {token_in['symbol']}→{token_out['symbol']} "
             f"buy={buy_dex}({buy_price:.6f}) sell={sell_dex}({sell_price:.6f}) "
             f"profit={net_profit_pct:.3f}% gas_cost=${gas_cost_usd:.4f} "
+            f"flashloan_fee=${flashloan_fee_usd:.4f} "
             f"net_profit=${net_profit_usd:.4f} ({net_profit_pct_after_gas:.3f}%)"
         )
 
-        # Check if profitable
-        if net_profit_pct_after_gas >= (config.PROFIT_THRESHOLD * 100):
+        # Check if profitable (percentage threshold AND dust threshold)
+        min_profit_usd = getattr(config, 'MIN_PROFIT_USD', 1.0)
+
+        if net_profit_pct_after_gas >= (config.PROFIT_THRESHOLD * 100) and net_profit_usd >= min_profit_usd:
             # Check if this is a multi-hop route
             is_multi_hop = (len(buy_route) > 2) or (len(sell_route) > 2)
 
@@ -542,6 +564,7 @@ class ScrollDEXScanner:
                 'profit_pct': round(net_profit_pct_after_gas, 4),
                 'profit_usd': round(net_profit_usd, 2),
                 'gas_cost_usd': round(gas_cost_usd, 4),
+                'flashloan_fee_usd': round(flashloan_fee_usd, 4),
                 'gas_estimate': gas_estimate,
                 'amount': amount,
                 'buy_route': buy_route,
@@ -585,6 +608,7 @@ class ScrollDEXScanner:
 
         print(f"{Fore.GREEN}Profit: {opp['profit_pct']:.3f}% (${opp['profit_usd']})")
         print(f"{Fore.CYAN}Gas Cost: ${opp['gas_cost_usd']:.4f} ({opp['gas_estimate']} gas)")
+        print(f"{Fore.CYAN}Flashloan Fee: ${opp.get('flashloan_fee_usd', 0):.4f} (0.09%)")
         print(f"{Fore.GREEN}{'='*60}\n")
 
     async def run_continuous_scan(self):
